@@ -95,7 +95,7 @@ Notes for LLMs:
 ## kanban/list
 - 入力: `board`, フィルタ
   - `columns`（string[]）/`column`（string, 非推奨）
-  - `lane`, `assignee`, `label`, `priority`, `query`（タイトル/本文の部分一致）
+  - `lane`, `assignee`, `label`, `priority`, `query`（タイトル/本文/IDの部分一致）
   - `includeDone`（bool, 既定=false）: `.kanban/done/`配下を含める
   - ページング: `offset`（既定0）, `limit`（既定200）
 - 出力: `items[]`（`{cardId,title,column,lane}`）, `nextOffset`（存在すれば次オフセット）

@@ -947,7 +947,8 @@ Board: `%BOARD%` (e.g., ".")
             if let Some(ref q) = query_f {
                 let t = card.front_matter.title.to_lowercase();
                 let b = card.body.to_lowercase();
-                if !t.contains(q) && !b.contains(q) {
+                let i = card.front_matter.id.to_lowercase();
+                if !t.contains(q) && !b.contains(q) && !i.contains(q) {
                     return None;
                 }
             }
@@ -2247,6 +2248,26 @@ mod tests {
             "params":{"name":"kanban_list","arguments":{"board":root,"columns":["backlog"],"query":"banana"}}
         })).unwrap();
         assert_eq!(q["result"]["items"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rpc_list_query_matches_id() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        // create a card
+        let rn = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"kanban_new","arguments":{"board":root,"title":"Q","column":"backlog"}}
+        })).unwrap();
+        let id = rn["result"]["cardId"].as_str().unwrap().to_string();
+        let needle = &id[..6]; // partial ULID
+        let lst = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"kanban_list","arguments":{"board":root,"columns":["backlog"],"query":needle}}
+        })).unwrap();
+        let items = lst["result"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "should match by id substring");
+        assert_eq!(items[0]["cardId"].as_str().unwrap(), id);
     }
 
     #[test]
