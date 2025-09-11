@@ -1,0 +1,16 @@
+[package]
+name = "kanban-lint"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+kanban-model = { path = "../kanban-model" }
+kanban-storage = { path = "../kanban-storage" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+fs-err = { workspace = true }
+walkdir = { workspace = true }
+
+tempfile = { workspace = true }

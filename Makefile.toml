@@ -1,0 +1,11 @@
+[tasks.build-release]
+command = "cargo"
+args = ["build", "--workspace", "--release"]
+
+[tasks.e2e]
+description = "Run local E2E against Codex CLI + kanban MCP"
+dependencies = ["build-release"]
+script = [
+  "bash ./scripts/e2e_codex.sh"
+]
+

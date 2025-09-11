@@ -1,0 +1,23 @@
+[package]
+name = "kanban-storage"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+kanban-model = { path = "../kanban-model" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+fs-err = { workspace = true }
+walkdir = { workspace = true }
+regex = { workspace = true }
+slug = { workspace = true }
+tracing = { workspace = true }
+
+time = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]

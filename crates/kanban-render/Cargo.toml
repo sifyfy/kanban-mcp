@@ -1,0 +1,16 @@
+[package]
+name = "kanban-render"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+kanban-model = { path = "../kanban-model" }
+walkdir = { workspace = true }
+handlebars = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+kanban-storage = { path = "../kanban-storage" }
+tempfile = { workspace = true }
+fs-err = { workspace = true }
+toml = { workspace = true }

@@ -1,0 +1,15 @@
+target/
+**/target/
+/.idea/
+/.vscode/
+**/*.swp
+**/*.swo
+node_modules/
+/.DS_Store
+/.env
+.cargo/
+/.pytest_cache
+/.ruff_cache
+/.mypy_cache
+/.kanban/
+/.temp/

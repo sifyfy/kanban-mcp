@@ -1,0 +1,22 @@
+[advisories]
+ignore = []
+
+[licenses]
+# Allow standard OSS licenses; adjust as needed
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "CC0-1.0",
+]
+
+[bans]
+multiple-versions = "allow"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
