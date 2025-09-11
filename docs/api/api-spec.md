@@ -44,7 +44,11 @@ Notes for LLMs:
   - `assignees`（省略可, string[]）
   - `body`（省略可, string, Markdown）
 - 出力
-  - `cardId`, `path`, `uri`（`kanban://...`）, `created`（FM+本文）
+  - `cardId`, `path`
+- 例（入力）:
+```json
+{"name":"kanban/new","arguments":{"board":".","title":"Spec","column":"backlog","labels":["doc"],"assignees":["alice"],"body":"Write spec first"}}
+```
 
 ## kanban/move
 - 入力: `board`, `cardId`, `toColumn`（必須）
@@ -59,8 +63,23 @@ Notes for LLMs:
 - writer: `columns.toml`の`[writer]`に`auto_rename_on_conflict`/`rename_suffix`がある場合、ファイル名の競合時に自動的に別名へリネーム（`warnings[]`に結果を記録）
 - 備考: リネーム競合が発生した場合、`result.warnings[]`に理由を格納（例: "rename target exists; kept original filename"）
   - `patch.fm`（部分更新: lane/priority/size/assignees/labels/depends_on など）
-  - `patch.body`（Markdownの追記/置換）
+    - 原則: 「未指定=無変更」。`[]` を指定した場合は空集合として上書き。
+  - `patch.body`（オブジェクト）
+    - 形式: `{ "text": string, "replace": boolean }`
+    - `replace:false`（既定）: 本文末尾に追記。既存本文が非空かつ末尾改行が無ければ1つ改行を挿入してから `text` を追加し、最後に改行を1つ付ける。
+    - `replace:true`         : 本文を `text` で置換（末尾改行は強制しない）。
+    - バリデーション: `patch.body` がオブジェクトでない、または `text` 欠落、または `replace:true` かつ `text` 未指定は `invalid-argument`。
 - 出力: `updated`（差分概要）
+
+### 例: update（追記）
+```json
+{"name":"kanban/update","arguments":{"board":".","cardId":"01ABC...","patch":{"body":{"text":"append line","replace":false}}}}
+```
+
+### 例: update（置換）
+```json
+{"name":"kanban/update","arguments":{"board":".","cardId":"01ABC...","patch":{"fm":{"title":"New Title"},"body":{"text":"full body","replace":true}}}}
+```
 
 ### 例: update（warnings付き）
 ```json

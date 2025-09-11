@@ -1133,8 +1133,16 @@ Board: `%BOARD%` (e.g., ".")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let size = args.get("size").and_then(|v| v.as_u64()).map(|n| n as u32);
-
-        let id = board.new_card(title, lane, priority, size, column)?;
+        let labels = args
+            .get("labels")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect::<Vec<String>>());
+        let assignees = args
+            .get("assignees")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect::<Vec<String>>());
+        let body = args.get("body").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let id = board.new_card(title, lane, priority, size, column, labels, assignees, body)?;
         let path = PathBuf::from(&board.root)
             .join(".kanban")
             .join(column)
@@ -1484,18 +1492,28 @@ Board: `%BOARD%` (e.g., ".")
                     );
                 }
             }
-            if let Some(body) = patch.get("body").and_then(|v| v.as_str()) {
-                let replace = patch
-                    .get("bodyReplace")
+            if let Some(bv) = patch.get("body") {
+                let obj = bv.as_object().ok_or_else(|| anyhow!(
+                    "invalid-argument: patch.body must be an object with {{text,replace}}"
+                ))?;
+                let text_opt = obj.get("text").and_then(|v| v.as_str());
+                let replace = obj
+                    .get("replace")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                if replace && text_opt.is_none() {
+                    bail!("invalid-argument: patch.body.replace=true requires text");
+                }
+                let text = text_opt.ok_or_else(|| anyhow!(
+                    "invalid-argument: patch.body.text is required"
+                ))?;
                 if replace {
-                    card.body = body.to_string();
+                    card.body = text.to_string();
                 } else {
-                    if !card.body.ends_with("\n") {
+                    if !card.body.ends_with('\n') && !card.body.is_empty() {
                         card.body.push('\n');
                     }
-                    card.body.push_str(body);
+                    card.body.push_str(text);
                     card.body.push('\n');
                 }
             }
@@ -2175,7 +2193,7 @@ mod tests {
         let _ = Server::handle_value(json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
             "params":{"name":"kanban_update","arguments":{"board":root,"cardId":ida,
-                "patch":{"fm":{"labels":["x"],"assignees":["alice"]},"body":"apple"}}}
+                "patch":{"fm":{"labels":["x"],"assignees":["alice"]},"body":{"text":"apple","replace":false}}}}
         }))
         .unwrap();
         let rb = Server::handle_value(json!({
@@ -2186,7 +2204,7 @@ mod tests {
         let _ = Server::handle_value(json!({
             "jsonrpc":"2.0","id":4,"method":"tools/call",
             "params":{"name":"kanban_update","arguments":{"board":root,"cardId":idb,
-                "patch":{"fm":{"labels":["y"],"assignees":["bob"]},"body":"banana"}}}
+                "patch":{"fm":{"labels":["y"],"assignees":["bob"]},"body":{"text":"banana","replace":false}}}}
         }))
         .unwrap();
         let rc = Server::handle_value(json!({
@@ -2229,6 +2247,68 @@ mod tests {
             "params":{"name":"kanban_list","arguments":{"board":root,"columns":["backlog"],"query":"banana"}}
         })).unwrap();
         assert_eq!(q["result"]["items"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rpc_update_body_requires_text_when_replace_true() {
+        use tempfile::tempdir;
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        // new card
+        let rn = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"kanban_new","arguments":{"board":root,"title":"U","column":"backlog"}}
+        })).unwrap();
+        let id = rn["result"]["cardId"].as_str().unwrap().to_string();
+        // update with replace=true but no text -> invalid-argument
+        let req = json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{
+                "name":"kanban_update",
+                "arguments":{
+                    "board":root,
+                    "cardId":id,
+                    "patch":{ "body": {"replace": true} }
+                }
+            }
+        });
+        let rsp = Server::handle_value(req).unwrap();
+        assert_eq!(rsp["error"]["message"].as_str().unwrap(), "invalid-argument");
+    }
+
+    #[test]
+    fn rpc_new_saves_body_and_labels_and_assignees() {
+        use tempfile::tempdir;
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        // Create with body + labels + assignees
+        let rsp = Server::handle_value(serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{
+                "name":"kanban_new",
+                "arguments":{
+                    "board":root,
+                    "title":"With meta",
+                    "column":"backlog",
+                    "labels":["alpha","beta"],
+                    "assignees":["alice"],
+                    "body":"hello\nworld"
+                }
+            }
+        })).unwrap();
+        let id = rsp["result"]["cardId"].as_str().unwrap().to_string();
+        // Read back the card via storage API
+        let b = kanban_storage::Board::new(&root);
+        let cf = b.read_card(&id).unwrap();
+        assert_eq!(cf.front_matter.labels.as_ref().unwrap(), &vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(cf.front_matter.assignees.as_ref().unwrap(), &vec!["alice".to_string()]);
+        assert_eq!(cf.body.trim(), "hello\nworld");
+        // Also check index reflects labels/assignees
+        let idx = std::fs::read_to_string(
+            std::path::Path::new(&root).join(".kanban").join("cards.ndjson")
+        ).unwrap();
+        assert!(idx.contains("\"labels\":[\"alpha\",\"beta\"]"));
+        assert!(idx.contains("\"assignees\":[\"alice\"]"));
     }
 
     #[test]

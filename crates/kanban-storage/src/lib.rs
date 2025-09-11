@@ -85,11 +85,17 @@ impl Board {
         priority: Option<String>,
         size: Option<u32>,
         column: &str,
+        labels: Option<Vec<String>>,
+        assignees: Option<Vec<String>>,
+        body: Option<String>,
     ) -> Result<String> {
         let mut card = CardFile::new_with_title(title);
         card.front_matter.lane = lane;
         card.front_matter.priority = priority;
         card.front_matter.size = size;
+        card.front_matter.labels = labels;
+        card.front_matter.assignees = assignees;
+        if let Some(b) = body { card.body = b; }
 
         let id = card.front_matter.id.clone();
         let filename = filename_for(&id, title);
