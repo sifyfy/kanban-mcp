@@ -10,7 +10,7 @@ title: ツール/API仕様（I/O）
 - kanban/new: Create a new card. Non-idempotent (avoid duplicates). Required: board, title. Default column: backlog.
 - kanban/move: Move a card to another column. Idempotent if already in the target column. Required: board, cardId, toColumn.
 - kanban/done: Mark a card as done and move it to done/YYYY/MM/. Returns completed_at. Required: board, cardId.
-- kanban/list: List cards with filters and pagination. Always pass columns to limit scope; prefer limit ≤ 200. query/includeDone may fall back to FS scanning. Required: board.
+- kanban/list: List cards with filters and pagination. Always pass columns to limit scope; prefer limit ≤ 200. If columns are omitted, the server defaults to all non-done columns (derived from `cards.ndjson` or `columns.toml`). `query`/`includeDone` may fall back to FS scanning. Required: board.
 - kanban/tree: Return a parent-children tree rooted at an ID (read-only). Required: board, root. Optional: depth (default 3).
 - kanban/watch: Start a filesystem watch and emit notifications/publish events (long-running; not for batch). Required: board.
 - kanban/update: Update card front-matter and/or body. Title changes may rename the file per [writer] settings; warnings may appear. Required: board, cardId, patch.
@@ -95,6 +95,7 @@ Notes for LLMs:
 ## kanban/list
 - 入力: `board`, フィルタ
   - `columns`（string[]）/`column`（string, 非推奨）
+    - 未指定時は「done 以外のすべての列」を既定として検索します（優先度: `.kanban/cards.ndjson`内の列一覧 → `.kanban/columns.toml` → 既定 `[backlog,doing,review]`）。
   - `lane`, `assignee`, `label`, `priority`, `query`（タイトル/本文/IDの部分一致）
   - `includeDone`（bool, 既定=false）: `.kanban/done/`配下を含める
   - ページング: `offset`（既定0）, `limit`（既定200）

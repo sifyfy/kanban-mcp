@@ -171,7 +171,7 @@ pub fn tool_descriptors_v1() -> Vec<Tool> {
         },
         Tool {
             name: "kanban_list".into(),
-            description: "List cards with filters and pagination. Always pass columns to limit scope. Prefer limit <= 200. query/includeDone may fall back to filesystem scanning.".into(),
+            description: "List cards with filters and pagination. Always pass columns to limit scope. If omitted, defaults to all non-done columns (from cards.ndjson or columns.toml). Prefer limit <= 200. query/includeDone may fall back to filesystem scanning.".into(),
             title: Some("List Cards".into()),
             input_schema: Some(maybe_openai_schema(serde_json::json!({
               "type":"object","required":["board"],
@@ -195,7 +195,8 @@ pub fn tool_descriptors_v1() -> Vec<Tool> {
               "idempotentHint": true,
               "readOnlyHint": true,
               "recommendedLimit": 50,
-              "columnsRequired": true
+              "columnsRequired": true,
+              "defaultColumnsPolicy": "nonDone"
             })),
         },
         Tool {
@@ -872,7 +873,50 @@ Board: `%BOARD%` (e.g., ".")
         } else if let Some(c) = args.get("column").and_then(|v| v.as_str()) {
             columns.push(c.to_string());
         } else {
-            columns.push("backlog".into());
+            // columns 未指定時は「done 以外の列」全体を既定スコープとする。
+            // 優先度: cards.ndjson の列一覧 -> columns.toml -> 既定 [backlog, doing, review]
+            columns = {
+                // 1) インデックスから既存列を収集（done除外）
+                let mut cols: Vec<String> = vec![];
+                let idx = board.root.join(".kanban").join("cards.ndjson");
+                if let Ok(text) = fs_err::read_to_string(&idx) {
+                    for line in text.lines() {
+                        if line.trim().is_empty() { continue; }
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                            if let Some(col) = v.get("column").and_then(|x| x.as_str()) {
+                                if !col.eq_ignore_ascii_case("done") && !col.trim().is_empty() {
+                                    cols.push(col.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                // 2) columns.toml または既定値にフォールバック
+                if cols.is_empty() {
+                    let cfg = {
+                        let p = board.root.join(".kanban").join("columns.toml");
+                        if let Ok(t) = fs_err::read_to_string(p) {
+                            toml::from_str::<kanban_model::ColumnsToml>(&t).unwrap_or_default()
+                        } else {
+                            kanban_model::ColumnsToml::default()
+                        }
+                    };
+                    if cfg.columns.is_empty() {
+                        cols = vec!["backlog".into(), "doing".into(), "review".into()];
+                    } else {
+                        cols = cfg
+                            .columns
+                            .into_iter()
+                            .filter(|c| !c.eq_ignore_ascii_case("done"))
+                            .collect::<Vec<_>>();
+                    }
+                }
+                // 重複排除（順序維持）
+                let mut seen = std::collections::HashSet::new();
+                cols.into_iter()
+                    .filter(|c| seen.insert(c.to_lowercase()))
+                    .collect::<Vec<_>>()
+            };
         }
         let include_done = args
             .get("includeDone")
@@ -2180,6 +2224,46 @@ mod tests {
             "params":{"name":"kanban_done","arguments":{"board":root,"cardId":id_a}}
         }))
         .unwrap();
+    }
+
+    #[test]
+    fn rpc_list_default_scope_excludes_done() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        // backlog: A
+        let ra = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"kanban_new","arguments":{"board":root,"title":"A","column":"backlog"}}
+        })).unwrap();
+        let _ida = ra["result"]["cardId"].as_str().unwrap().to_string();
+        // doing: B
+        let rb = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"kanban_new","arguments":{"board":root,"title":"B","column":"doing"}}
+        })).unwrap();
+        let _idb = rb["result"]["cardId"].as_str().unwrap().to_string();
+        // backlog->done: C
+        let rc = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"kanban_new","arguments":{"board":root,"title":"C","column":"backlog"}}
+        })).unwrap();
+        let idc = rc["result"]["cardId"].as_str().unwrap().to_string();
+        let _ = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":4,"method":"tools/call",
+            "params":{"name":"kanban_done","arguments":{"board":root,"cardId":idc}}
+        })).unwrap();
+        // columns未指定: 非done列（backlog, doing, ...）から2件が返る
+        let l_nd = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":5,"method":"tools/call",
+            "params":{"name":"kanban_list","arguments":{"board":root,"offset":0,"limit":100}}
+        })).unwrap();
+        assert_eq!(l_nd["result"]["items"].as_array().unwrap().len(), 2);
+        // includeDone=true で done も含まれて3件
+        let l_with_done = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":6,"method":"tools/call",
+            "params":{"name":"kanban_list","arguments":{"board":root,"includeDone":true,"offset":0,"limit":100}}
+        })).unwrap();
+        assert_eq!(l_with_done["result"]["items"].as_array().unwrap().len(), 3);
     }
 
     #[test]
