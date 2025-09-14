@@ -22,6 +22,9 @@ title: ツール/API仕様（I/O）
 - Manual: `resources/list` -> `kanban://{board}/manual` (Markdown)
 - Card State: `resources/list {cardId}` -> `kanban://{board}/cards/{id}/state` (JSON)
   - Params for `resources/read`: `mode=brief|full` (default brief), `limit` (default 3)
+- Card Content: `resources/read` で本文/Markdownの直接取得が可能
+  - `kanban://local/cards/{id}/markdown` → `mimeType: text/markdown`（フロントマター込み）
+  - `kanban://local/cards/{id}/body` → `mimeType: text/markdown`（本文のみ）
 
 Notes for LLMs:
 - Prefer scoped queries (columns, small limits) to avoid expensive filesystem scans.
@@ -90,7 +93,7 @@ Notes for LLMs:
 {"updated":true,"column":"backlog","path":".kanban/backlog/01ABC__old-title.md","warnings":["rename target exists; kept original filename: .kanban/backlog/01ABC__new-title.md"]}
 ```
 
-（注）カード本文の取得はファイル直読で代替可能です（MCPに`read`はありません）。
+（注）カード本文は `resources/read` の `.../markdown` / `.../body` で取得できます。直接ファイル直読も可能です。
 
 ## kanban/list
 - 入力: `board`, フィルタ
@@ -99,7 +102,10 @@ Notes for LLMs:
   - `lane`, `assignee`, `label`, `priority`, `query`（タイトル/本文/IDの部分一致）
   - `includeDone`（bool, 既定=false）: `.kanban/done/`配下を含める
   - ページング: `offset`（既定0）, `limit`（既定200）
-- 出力: `items[]`（`{cardId,title,column,lane}`）, `nextOffset`（存在すれば次オフセット）
+- 出力: `items[]`（`{cardId,title,column,lane,path,uris{state,markdown,body},pathIsGuess?}`）, `nextOffset`（存在すれば次オフセット）
+  - `path`: ボードルートからの相対パス（例: `.kanban/doing/01ABC__slug.md`）
+  - `pathIsGuess`: true の場合、インデックス未整備などでパスを推測していることを示します
+  - `uris.*`: `resources/read` 用のURI（state: JSON、markdown/body: text/markdown）
 - 例（入力）:
 ```json
 {
@@ -120,7 +126,9 @@ Notes for LLMs:
 ```json
 {
   "items": [
-    {"cardId":"01JB6...","title":"FFT最適化","column":"doing","lane":"core"}
+    {"cardId":"01JB6...","title":"FFT最適化","column":"doing","lane":"core",
+     "path": ".kanban/doing/01JB6__fft.md",
+     "uris": {"state":"kanban://local/cards/01JB6/state","markdown":"kanban://local/cards/01JB6/markdown","body":"kanban://local/cards/01JB6/body"}}
   ],
   "nextOffset": null
 }

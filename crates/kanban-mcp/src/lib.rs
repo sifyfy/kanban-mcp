@@ -171,7 +171,7 @@ pub fn tool_descriptors_v1() -> Vec<Tool> {
         },
         Tool {
             name: "kanban_list".into(),
-            description: "List cards with filters and pagination. Always pass columns to limit scope. If omitted, defaults to all non-done columns (from cards.ndjson or columns.toml). Prefer limit <= 200. query/includeDone may fall back to filesystem scanning.".into(),
+            description: "List cards with filters and pagination. Always pass columns to limit scope. If omitted, defaults to all non-done columns (from cards.ndjson or columns.toml). Returns relative file path and URIs (state/markdown/body). Prefer limit <= 200. query/includeDone may fall back to filesystem scanning.".into(),
             title: Some("List Cards".into()),
             input_schema: Some(maybe_openai_schema(serde_json::json!({
               "type":"object","required":["board"],
@@ -529,10 +529,22 @@ impl Server {
                         id,
                         json!({"resource": {"uri": uri, "mimeType":"text/markdown","text": text}}),
                     ))?)
-                } else if let Some((_bid, cid)) = Server::parse_card_state_uri(&uri) {
-                    // ignore bid for now, trust provided board param
+                } else if let Some((_host, cid, kind)) = Server::parse_card_uri(&uri) {
+                    // ignore host for now, trust provided board param
                     let b = Board::new(&board);
                     let card = b.read_card(&cid)?;
+                    if kind == "markdown" {
+                        let text = b.read_card_text(&cid)?;
+                        return Ok(serde_json::to_value(JsonRpcResponse::result(
+                            id,
+                            json!({"resource": {"uri": uri, "mimeType":"text/markdown","text": text}}),
+                        ))?);
+                    } else if kind == "body" {
+                        return Ok(serde_json::to_value(JsonRpcResponse::result(
+                            id,
+                            json!({"resource": {"uri": uri, "mimeType":"text/markdown","text": card.body}}),
+                        ))?);
+                    }
                     let mode = req
                         .params
                         .as_ref()
@@ -718,9 +730,8 @@ Board: `%BOARD%` (e.g., ".")
         tl.replace("%BOARD%", board)
     }
 
-    fn parse_card_state_uri(uri: &str) -> Option<(String, String)> {
-        // Robust parser: accept kanban://<host>/cards/<ID>/state with arbitrary host.
-        // We ignore host and return (host, id).
+    fn parse_card_uri(uri: &str) -> Option<(String, String, String)> {
+        // Robust parser: accept kanban://<host>/cards/<ID>/(state|markdown|body)
         let s = uri.strip_prefix("kanban://")?;
         let parts: Vec<&str> = s.split('/').filter(|p| !p.is_empty()).collect();
         // Find tail 'state'
@@ -728,12 +739,13 @@ Board: `%BOARD%` (e.g., ".")
             return None;
         }
         let n = parts.len();
-        if parts[n - 1] != "state" || parts[n - 3] != "cards" {
+        let tail = parts[n - 1];
+        if (tail != "state" && tail != "markdown" && tail != "body") || parts[n - 3] != "cards" {
             return None;
         }
         let host = parts[0].to_string();
         let id = parts[n - 2].to_string();
-        Some((host, id))
+        Some((host, id, tail.to_string()))
     }
 
     fn board_from_arg(args: &Value) -> Result<Board> {
@@ -1081,12 +1093,41 @@ Board: `%BOARD%` (e.g., ".")
                         continue;
                     }
                 }
-                items.push(serde_json::json!({
-                    "cardId": v.get("id").cloned().unwrap_or(serde_json::json!(null)),
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                // path from index or fallback guess from (column,title)
+                let (path, path_is_guess) = if let Some(p) = v.get("path").and_then(|x| x.as_str()) {
+                    (p.to_string(), false)
+                } else {
+                    // derive filename from title
+                    let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
+                    let fname = kanban_model::filename_for(id, title);
+                    let p = if col == "done" {
+                        // Unknown year/month; leave directory ambiguous (best-effort)
+                        format!(".kanban/done/**/{}", fname)
+                    } else {
+                        format!(".kanban/{}/{}", col, fname)
+                    };
+                    (p, true)
+                };
+                let uris = serde_json::json!({
+                    "state": format!("kanban://local/cards/{}/state", id),
+                    "markdown": format!("kanban://local/cards/{}/markdown", id),
+                    "body": format!("kanban://local/cards/{}/body", id),
+                });
+                let mut o = serde_json::json!({
+                    "cardId": id,
                     "title": v.get("title").cloned().unwrap_or(serde_json::json!(null)),
                     "column": col,
                     "lane": v.get("lane").cloned().unwrap_or(serde_json::json!(null)),
-                }));
+                    "path": path,
+                    "uris": uris,
+                });
+                if path_is_guess {
+                    if let Some(obj) = o.as_object_mut() {
+                        obj.insert("pathIsGuess".into(), serde_json::json!(true));
+                    }
+                }
+                items.push(o);
             }
         } else {
             for col in &columns {
@@ -1103,7 +1144,24 @@ Board: `%BOARD%` (e.g., ".")
                             Err(_) => continue,
                         };
                         if let Ok(card) = CardFile::from_markdown(&text) {
-                            if let Some(v) = consider(col, &card) {
+                            if let Some(mut v) = consider(col, &card) {
+                                if let Some(obj) = v.as_object_mut() {
+                                    // relative path from board root
+                                    let rp = entry
+                                        .path()
+                                        .strip_prefix(&board.root)
+                                        .ok()
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| entry.path().to_string_lossy().to_string());
+                                    obj.insert("path".into(), serde_json::json!(rp));
+                                    obj.insert("pathIsGuess".into(), serde_json::json!(false));
+                                    let id = card.front_matter.id.clone();
+                                    obj.insert("uris".into(), serde_json::json!({
+                                        "state": format!("kanban://local/cards/{}/state", id),
+                                        "markdown": format!("kanban://local/cards/{}/markdown", id),
+                                        "body": format!("kanban://local/cards/{}/body", id),
+                                    }));
+                                }
                                 items.push(v)
                             }
                         }
@@ -1587,8 +1645,8 @@ Board: `%BOARD%` (e.g., ".")
                 warnings.push(w);
             }
         }
-        board.upsert_card_index(&card, &column)?;
         let final_path = if new_path.exists() { new_path } else { path };
+        board.upsert_card_index(&card, &column, &final_path)?;
         let mut res = serde_json::json!({"updated": true, "column": column, "path": final_path.to_string_lossy()});
         if !warnings.is_empty() {
             if let Some(obj) = res.as_object_mut() {
@@ -2892,5 +2950,122 @@ mod tests_schema_strip {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_content_paths_and_resources {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn resources_read_markdown_and_body() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        // create with body
+        let rn = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"kanban_new","arguments":{"board":root,"title":"R1","column":"backlog","body":"Hello body"}}
+        })).unwrap();
+        let id = rn["result"]["cardId"].as_str().unwrap().to_string();
+        // markdown
+        let uri_md = format!("kanban://local/cards/{}/markdown", id);
+        let r_md = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":2,"method":"resources/read",
+            "params":{"board":root,"uri":uri_md}
+        })).unwrap();
+        let text_md = r_md["result"]["resource"]["text"].as_str().unwrap();
+        assert!(text_md.starts_with("---\n"), "markdown should include front-matter");
+        assert!(text_md.contains("Hello body"));
+        // body
+        let uri_body = format!("kanban://local/cards/{}/body", id);
+        let r_bd = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":3,"method":"resources/read",
+            "params":{"board":root,"uri":uri_body}
+        })).unwrap();
+        let text_bd = r_bd["result"]["resource"]["text"].as_str().unwrap();
+        assert_eq!(text_bd.trim(), "Hello body");
+    }
+
+    #[test]
+    fn list_returns_path_and_uris_in_index_and_fs_modes() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        let rn = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"kanban_new","arguments":{"board":root,"title":"Alpha","column":"backlog","body":"B"}}
+        })).unwrap();
+        let id = rn["result"]["cardId"].as_str().unwrap().to_string();
+        // index mode (no query)
+        let l1 = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"kanban_list","arguments":{"board":root,"columns":["backlog"],"limit":10}}
+        })).unwrap();
+        let items = l1["result"]["items"].as_array().unwrap();
+        assert!(!items.is_empty());
+        let it = &items[0];
+        assert!(it.get("path").and_then(|v| v.as_str()).is_some());
+        assert_eq!(it["uris"]["state"].as_str().unwrap(), format!("kanban://local/cards/{}/state", id));
+        assert_eq!(it["uris"]["markdown"].as_str().unwrap(), format!("kanban://local/cards/{}/markdown", id));
+        assert_eq!(it["uris"]["body"].as_str().unwrap(), format!("kanban://local/cards/{}/body", id));
+        // FS scan mode (query present)
+        let l2 = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"kanban_list","arguments":{"board":root,"columns":["backlog"],"query":"Alpha","limit":10}}
+        })).unwrap();
+        let items2 = l2["result"]["items"].as_array().unwrap();
+        assert!(!items2.is_empty());
+        let it2 = &items2[0];
+        assert!(it2.get("path").and_then(|v| v.as_str()).is_some());
+        assert_eq!(it2["uris"]["body"].as_str().unwrap(), format!("kanban://local/cards/{}/body", id));
+    }
+
+    #[test]
+    fn update_rename_reflected_in_index_path() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        let rn = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"kanban_new","arguments":{"board":root,"title":"Old","column":"backlog"}}
+        })).unwrap();
+        let id = rn["result"]["cardId"].as_str().unwrap().to_string();
+        let _ru = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"kanban_update","arguments":{"board":root,"cardId":id,"patch":{"fm":{"title":"New Name"}}}}
+        })).unwrap();
+        let l = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"kanban_list","arguments":{"board":root,"columns":["backlog"],"limit":10}}
+        })).unwrap();
+        let it = &l["result"]["items"][0];
+        let path = it["path"].as_str().unwrap();
+        assert!(path.contains("__new-name.md"), "path should reflect renamed filename: {path}");
+    }
+
+    #[test]
+    fn done_card_path_contains_year_month() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        let rn = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"kanban_new","arguments":{"board":root,"title":"D","column":"backlog"}}
+        })).unwrap();
+        let id = rn["result"]["cardId"].as_str().unwrap().to_string();
+        let _rd = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"kanban_done","arguments":{"board":root,"cardId":id}}
+        })).unwrap();
+        let lst = Server::handle_value(json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"kanban_list","arguments":{"board":root,"includeDone":true,"columns":["backlog"],"limit":50}}
+        })).unwrap();
+        let items = lst["result"]["items"].as_array().unwrap();
+        let any_done = items.iter().any(|it| {
+            let col = it["column"].as_str().unwrap_or("");
+            if col != "done" { return false; }
+            let p = it["path"].as_str().unwrap_or("");
+            p.contains(".kanban/done/")
+        });
+        assert!(any_done, "should include done item with path under .kanban/done/YYYY/MM/");
     }
 }

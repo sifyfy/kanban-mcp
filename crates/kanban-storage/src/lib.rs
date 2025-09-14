@@ -104,7 +104,7 @@ impl Board {
         let path = dir.join(filename);
         fs_err::write(&path, card.to_markdown()?)?;
         // index upsert
-        self.upsert_card_index(&card, column)?;
+        self.upsert_card_index(&card, column, &path)?;
         Ok(id)
     }
 
@@ -124,10 +124,10 @@ impl Board {
         let dest_dir = self.root.join(".kanban").join(to_column);
         fs_err::create_dir_all(&dest_dir)?;
         let dest = dest_dir.join(filename);
-        fs_err::rename(path, dest)?;
+        fs_err::rename(path, dest.clone())?;
         // index upsert with new column
         let card = self.read_card(id)?;
-        self.upsert_card_index(&card, to_column)?;
+        self.upsert_card_index(&card, to_column, &dest)?;
         Ok(())
     }
 
@@ -155,10 +155,10 @@ impl Board {
         fs_err::create_dir_all(&dest_dir)?;
         let filename = filename_for(&card.front_matter.id, &card.front_matter.title);
         let dest = dest_dir.join(filename);
-        fs_err::rename(path, dest)?;
+        fs_err::rename(path, dest.clone())?;
         // index upsert with new column
         let card = self.read_card(id)?;
-        self.upsert_card_index(&card, "done")?;
+        self.upsert_card_index(&card, "done", &dest)?;
         Ok(())
     }
 
@@ -410,6 +410,7 @@ impl Board {
         &self,
         card: &kanban_model::CardFile,
         column: &str,
+        path: &std::path::Path,
     ) -> anyhow::Result<()> {
         let base = self.root.join(".kanban");
         fs_err::create_dir_all(&base)?;
@@ -429,6 +430,7 @@ impl Board {
                 lines.push(line.to_string());
             }
         }
+        let rel_path = path.strip_prefix(&self.root).unwrap_or(path).to_path_buf();
         let v = json!({
             "id": card.front_matter.id,
             "title": card.front_matter.title,
@@ -438,6 +440,7 @@ impl Board {
             "labels": card.front_matter.labels,
             "assignees": card.front_matter.assignees,
             "completed_at": card.front_matter.completed_at,
+            "path": rel_path.to_string_lossy(),
         });
         lines.push(serde_json::to_string(&v)?);
         let mut tmp = tempfile::NamedTempFile::new_in(&base)?;
